@@ -1349,3 +1349,146 @@ describe("agentLoopContinue with AgentMessage", () => {
 		expect(messages[0].role).toBe("assistant");
 	});
 });
+
+describe("idle continuation (work-pending guard)", () => {
+	it("injects a bounded nudge when a text-only turn would end the loop", async () => {
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		const userPrompt = createUserMessage("do the task");
+
+		let nudgeCount = 0;
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			getIdleContinuation: () => {
+				nudgeCount++;
+				return createUserMessage("keep going");
+			},
+			maxIdleContinuations: 2,
+		};
+
+		// Every turn is text-only — the model never calls a tool. Without the
+		// guard this ends after one turn; with it, two nudges are injected
+		// before the cap forces the loop to end.
+		let calls = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				calls++;
+				const message = createAssistantMessage([{ type: "text", text: `turn ${calls}` }]);
+				stream.push({ type: "done", reason: "stop", message });
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const _event of stream) {
+			// drain
+		}
+		const messages = await stream.result();
+
+		// 3 assistant turns (initial + 2 nudged), 2 injected user nudges.
+		expect(calls).toBe(3);
+		expect(nudgeCount).toBe(2);
+		const injectedNudges = messages.filter((m) => m.role === "user" && m !== userPrompt);
+		expect(injectedNudges.length).toBe(2);
+	});
+
+	it("does not nudge when the hook returns null", async () => {
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [] };
+		const userPrompt = createUserMessage("do the task");
+
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			getIdleContinuation: () => null,
+			maxIdleContinuations: 5,
+		};
+
+		let calls = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				calls++;
+				stream.push({
+					type: "done",
+					reason: "stop",
+					message: createAssistantMessage([{ type: "text", text: "final answer" }]),
+				});
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const _event of stream) {
+			// drain
+		}
+
+		// Hook declined → loop ends after the single text-only turn.
+		expect(calls).toBe(1);
+	});
+
+	it("does not nudge a turn that executed a tool", async () => {
+		const toolSchema = Type.Object({ value: Type.String() });
+		const tool: AgentTool<typeof toolSchema, { value: string }> = {
+			name: "echo",
+			label: "Echo",
+			description: "Echo tool",
+			parameters: toolSchema,
+			async execute(_id, params) {
+				return { content: [{ type: "text", text: `ok:${params.value}` }], details: { value: params.value } };
+			},
+		};
+
+		const context: AgentContext = { systemPrompt: "", messages: [], tools: [tool] };
+		const userPrompt = createUserMessage("start");
+
+		let nudgeCount = 0;
+		const config: AgentLoopConfig = {
+			model: createModel(),
+			convertToLlm: identityConverter,
+			getIdleContinuation: () => {
+				nudgeCount++;
+				return createUserMessage("keep going");
+			},
+			maxIdleContinuations: 2,
+		};
+
+		// Turn 1 calls a tool (progress, no nudge); turn 2 is text-only (the
+		// guard fires → 1 nudge); turn 3 text-only (cap allows a 2nd nudge);
+		// turn 4 text-only hits the cap and ends.
+		let calls = 0;
+		const streamFn = () => {
+			const stream = new MockAssistantStream();
+			queueMicrotask(() => {
+				calls++;
+				if (calls === 1) {
+					stream.push({
+						type: "done",
+						reason: "toolUse",
+						message: createAssistantMessage(
+							[{ type: "toolCall", id: "t1", name: "echo", arguments: { value: "x" } }],
+							"toolUse",
+						),
+					});
+				} else {
+					stream.push({
+						type: "done",
+						reason: "stop",
+						message: createAssistantMessage([{ type: "text", text: `turn ${calls}` }]),
+					});
+				}
+			});
+			return stream;
+		};
+
+		const stream = agentLoop([userPrompt], context, config, undefined, streamFn);
+		for await (const _event of stream) {
+			// drain
+		}
+
+		// The tool turn made progress and was not nudged; the 2-nudge budget
+		// applies only to the consecutive text-only stalls that followed.
+		expect(nudgeCount).toBe(2);
+		expect(calls).toBe(4);
+	});
+});

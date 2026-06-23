@@ -317,7 +317,31 @@ export async function createAgentSession(options: CreateAgentSessionOptions = {}
 
 	const extensionRunnerRef: { current?: ExtensionRunner } = {};
 
+	// Work-pending guard (premature turn-end fix). Headless autonomous runs
+	// (e.g. Naomi's bridge) opt in via PI_IDLE_CONTINUATION: when a turn ends
+	// text-only (the model narrated a next step but issued no tool call), the
+	// loop injects one continuation nudge so the agent actually acts instead of
+	// silently abandoning the task. Bounded by PI_IDLE_CONTINUATION_MAX (default
+	// 2) so a genuinely-finished agent still ends. Off by default — an
+	// interactive session legitimately ends on a text-only reply.
+	const idleContinuationEnabled = /^(1|true|yes|on)$/i.test(process.env.PI_IDLE_CONTINUATION ?? "");
+	const idleContinuationMax = Number.parseInt(process.env.PI_IDLE_CONTINUATION_MAX ?? "", 10);
+	const IDLE_CONTINUATION_NUDGE =
+		"You ended your turn without calling a tool, but the task may not be complete. " +
+		"If there is remaining work — a revision to run, a sub-agent to dispatch, a deliverable " +
+		"to publish, a gate to clear — take that next concrete action now by calling the " +
+		"appropriate tool. Do not just describe what you will do; do it. If the task is genuinely " +
+		"and fully complete, briefly confirm completion and stop.";
+
 	agent = new Agent({
+		getIdleContinuation: idleContinuationEnabled
+			? (): AgentMessage => ({
+					role: "user",
+					content: [{ type: "text", text: IDLE_CONTINUATION_NUDGE }],
+					timestamp: Date.now(),
+				})
+			: undefined,
+		maxIdleContinuations: Number.isFinite(idleContinuationMax) && idleContinuationMax > 0 ? idleContinuationMax : undefined,
 		initialState: {
 			systemPrompt: "",
 			model,

@@ -21,6 +21,7 @@ import type {
 	AgentTool,
 	BeforeToolCallContext,
 	BeforeToolCallResult,
+	ShouldStopAfterTurnContext,
 	StreamFn,
 	ToolExecutionMode,
 } from "./types.js";
@@ -105,6 +106,10 @@ export interface AgentOptions {
 	prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
+	getIdleContinuation?: (
+		context: ShouldStopAfterTurnContext,
+	) => Promise<AgentMessage | null> | AgentMessage | null;
+	maxIdleContinuations?: number;
 	steeringMode?: QueueMode;
 	followUpMode?: QueueMode;
 	sessionId?: string;
@@ -182,6 +187,12 @@ export class Agent {
 	public prepareNextTurn?: (
 		signal?: AbortSignal,
 	) => Promise<AgentLoopTurnUpdate | undefined> | AgentLoopTurnUpdate | undefined;
+	/** Work-pending guard — see `AgentLoopConfig.getIdleContinuation`. */
+	public getIdleContinuation?: (
+		context: ShouldStopAfterTurnContext,
+	) => Promise<AgentMessage | null> | AgentMessage | null;
+	/** Cap for consecutive idle continuations between progress turns (default 2). */
+	public maxIdleContinuations?: number;
 	private activeRun?: ActiveRun;
 	/** Session identifier forwarded to providers for cache-aware backends. */
 	public sessionId?: string;
@@ -205,6 +216,8 @@ export class Agent {
 		this.beforeToolCall = options.beforeToolCall;
 		this.afterToolCall = options.afterToolCall;
 		this.prepareNextTurn = options.prepareNextTurn;
+		this.getIdleContinuation = options.getIdleContinuation;
+		this.maxIdleContinuations = options.maxIdleContinuations;
 		this.steeringQueue = new PendingMessageQueue(options.steeringMode ?? "one-at-a-time");
 		this.followUpQueue = new PendingMessageQueue(options.followUpMode ?? "one-at-a-time");
 		this.sessionId = options.sessionId;
@@ -430,6 +443,8 @@ export class Agent {
 			beforeToolCall: this.beforeToolCall,
 			afterToolCall: this.afterToolCall,
 			prepareNextTurn: this.prepareNextTurn ? async () => await this.prepareNextTurn?.(this.signal) : undefined,
+			getIdleContinuation: this.getIdleContinuation,
+			maxIdleContinuations: this.maxIdleContinuations,
 			convertToLlm: this.convertToLlm,
 			transformContext: this.transformContext,
 			getApiKey: this.getApiKey,

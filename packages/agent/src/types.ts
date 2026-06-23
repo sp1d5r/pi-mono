@@ -235,6 +235,37 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	getFollowUpMessages?: () => Promise<AgentMessage[]>;
 
 	/**
+	 * Work-pending guard. Returns a continuation nudge when a TEXT-ONLY turn
+	 * (zero tool calls) is about to end the loop.
+	 *
+	 * This is the fix for the premature turn-end: a turn where the model
+	 * narrated its next step ("I'll run the revision now") but issued no tool
+	 * call would otherwise emit `agent_end` and silently abandon the task.
+	 * Returning a message gives the agent another turn to actually act.
+	 *
+	 * Called only when ALL of: the turn produced no tool calls, no steering or
+	 * follow-up messages are queued, and fewer than `maxIdleContinuations`
+	 * nudges have been injected since the last turn that executed a tool.
+	 * Return an AgentMessage to inject and continue; return null to allow the
+	 * stop.
+	 *
+	 * The cap is what makes this safe: a genuinely-finished agent re-confirms
+	 * completion with another text-only turn and, once the cap is reached, the
+	 * loop ends normally — so this never becomes an infinite narrate-only loop.
+	 *
+	 * Contract: must not throw or reject. Return null when no continuation is wanted.
+	 */
+	getIdleContinuation?: (context: ShouldStopAfterTurnContext) => Promise<AgentMessage | null> | AgentMessage | null;
+
+	/**
+	 * Maximum consecutive idle continuations injected by `getIdleContinuation`
+	 * between progress turns (turns that executed at least one tool). The
+	 * counter resets to zero on any turn that ran a tool. Defaults to 2 when
+	 * `getIdleContinuation` is set.
+	 */
+	maxIdleContinuations?: number;
+
+	/**
 	 * Tool execution mode.
 	 * - "sequential": execute tool calls one by one
 	 * - "parallel": preflight tool calls sequentially, then execute allowed tools concurrently;

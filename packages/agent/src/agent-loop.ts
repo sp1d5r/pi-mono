@@ -163,6 +163,9 @@ async function runLoop(
 	let currentContext = initialContext;
 	let config = initialConfig;
 	let firstTurn = true;
+	// Idle-continuation budget for the work-pending guard. Counts consecutive
+	// text-only stalls; reset to zero whenever a turn executes a tool.
+	let idleContinuations = 0;
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
 
@@ -250,7 +253,39 @@ async function runLoop(
 				return;
 			}
 
+			// A turn that executed a tool is real progress — refill the budget.
+			if (toolCalls.length > 0) {
+				idleContinuations = 0;
+			}
+
 			pendingMessages = (await config.getSteeringMessages?.()) || [];
+
+			// Work-pending guard. A text-only turn (no tool calls) with nothing
+			// queued is about to exit the inner loop and emit `agent_end` — the
+			// premature turn-end where the model narrated a next step but never
+			// issued the tool call. Give the harness one bounded chance to inject
+			// a continuation nudge so the agent actually does the work. The cap
+			// keeps a genuinely-finished agent from looping: it re-confirms
+			// completion and, once the budget is spent, the loop ends normally.
+			if (
+				config.getIdleContinuation &&
+				toolCalls.length === 0 &&
+				pendingMessages.length === 0 &&
+				idleContinuations < (config.maxIdleContinuations ?? 2)
+			) {
+				const nudge = await config.getIdleContinuation({
+					message,
+					toolResults,
+					context: currentContext,
+					newMessages,
+				});
+				if (nudge) {
+					idleContinuations += 1;
+					// Reuse the steering-injection path at the top of the inner
+					// loop (emits message_start/_end + appends to context).
+					pendingMessages = [nudge];
+				}
+			}
 		}
 
 		// Agent would stop here. Check for follow-up messages.
