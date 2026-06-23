@@ -292,6 +292,29 @@ describe("shouldCompact", () => {
 
 		expect(shouldCompact(95000, 100000, settings)).toBe(false);
 	});
+
+	it("PI_MAX_CONTEXT_TOKENS caps the effective window below a huge model window", () => {
+		const settings: CompactionSettings = {
+			enabled: true,
+			reserveTokens: 16000,
+			keepRecentTokens: 20000,
+		};
+		// A 1M window would never trigger at 150k tokens...
+		expect(shouldCompact(150000, 1_000_000, settings)).toBe(false);
+		const prev = process.env.PI_MAX_CONTEXT_TOKENS;
+		try {
+			// ...but with a 160k cap, 150k > 160k-16k=144k → compact.
+			process.env.PI_MAX_CONTEXT_TOKENS = "160000";
+			expect(shouldCompact(150000, 1_000_000, settings)).toBe(true);
+			// Below the capped threshold stays false.
+			expect(shouldCompact(140000, 1_000_000, settings)).toBe(false);
+			// Cap never raises a smaller real window: min(window, cap) wins.
+			expect(shouldCompact(95000, 100000, settings)).toBe(true);
+		} finally {
+			if (prev === undefined) delete process.env.PI_MAX_CONTEXT_TOKENS;
+			else process.env.PI_MAX_CONTEXT_TOKENS = prev;
+		}
+	});
 });
 
 describe("findCutPoint", () => {

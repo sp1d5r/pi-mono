@@ -266,7 +266,16 @@ export function estimateProjectedContextTokens(
  */
 export function shouldCompact(contextTokens: number, contextWindow: number, settings: CompactionSettings): boolean {
 	if (!settings.enabled) return false;
-	return contextTokens > contextWindow - settings.reserveTokens;
+	// Size-aware cap. The default trigger is keyed to the model's context window
+	// — but a large window (e.g. sonnet-4-6's 1,000,000 tokens) means compaction
+	// effectively never fires, so a long session grows unbounded until the node
+	// process OOMs far below the token threshold (acute on the 4GB agent-runner,
+	// where the primary pi + subagent children share the heap). PI_MAX_CONTEXT_TOKENS
+	// imposes a fixed effective ceiling independent of the model window, so
+	// compaction fires on a bounded budget. Unset → original window-based behavior.
+	const cap = Number.parseInt(process.env.PI_MAX_CONTEXT_TOKENS ?? "", 10);
+	const effectiveWindow = Number.isFinite(cap) && cap > 0 ? Math.min(contextWindow, cap) : contextWindow;
+	return contextTokens > effectiveWindow - settings.reserveTokens;
 }
 
 // ============================================================================
