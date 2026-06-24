@@ -245,13 +245,14 @@ export interface AgentLoopConfig extends SimpleStreamOptions {
 	 *
 	 * Called only when ALL of: the turn produced no tool calls, no steering or
 	 * follow-up messages are queued, and fewer than `maxIdleContinuations`
-	 * nudges have been injected since the last turn that executed a tool.
+	 * nudges have been injected SO FAR THIS SESSION (a global cap, not per-stall).
 	 * Return an AgentMessage to inject and continue; return null to allow the
 	 * stop.
 	 *
-	 * The cap is what makes this safe: a genuinely-finished agent re-confirms
-	 * completion with another text-only turn and, once the cap is reached, the
-	 * loop ends normally — so this never becomes an infinite narrate-only loop.
+	 * The global cap is what makes this safe: once it's reached the guard goes
+	 * quiet and the next text-only turn ends the loop. An earlier per-stall cap
+	 * (reset on any tool turn) let a finished agent loop forever by calling a
+	 * trivial tool between "done" narrations (B8) — the global cap fixes that.
 	 *
 	 * Contract: must not throw or reject. Return null when no continuation is wanted.
 	 */

@@ -1427,7 +1427,11 @@ describe("idle continuation (work-pending guard)", () => {
 		expect(calls).toBe(1);
 	});
 
-	it("does not nudge a turn that executed a tool", async () => {
+	it("a tool turn does NOT refill the budget (global cap, B8 regression)", async () => {
+		// Regression for B8: a finished agent that emits "done" (text-only), gets
+		// nudged, then calls a trivial tool to comply must NOT get its nudge
+		// budget refilled by that tool turn — else it loops forever. The cap is
+		// session-global, so once spent the guard stays quiet.
 		const toolSchema = Type.Object({ value: Type.String() });
 		const tool: AgentTool<typeof toolSchema, { value: string }> = {
 			name: "echo",
@@ -1453,15 +1457,16 @@ describe("idle continuation (work-pending guard)", () => {
 			maxIdleContinuations: 2,
 		};
 
-		// Turn 1 calls a tool (progress, no nudge); turn 2 is text-only (the
-		// guard fires → 1 nudge); turn 3 text-only (cap allows a 2nd nudge);
-		// turn 4 text-only hits the cap and ends.
+		// Sequence: text (nudge 1) → text (nudge 2) → TOOL → text...
+		// The tool comes AFTER the budget is spent. With the old reset-on-tool it
+		// would refill and nudge again (loop). With the global cap it must NOT —
+		// the post-tool text turn ends the loop. So exactly 2 nudges, 4 turns.
 		let calls = 0;
 		const streamFn = () => {
 			const stream = new MockAssistantStream();
 			queueMicrotask(() => {
 				calls++;
-				if (calls === 1) {
+				if (calls === 3) {
 					stream.push({
 						type: "done",
 						reason: "toolUse",
@@ -1486,8 +1491,8 @@ describe("idle continuation (work-pending guard)", () => {
 			// drain
 		}
 
-		// The tool turn made progress and was not nudged; the 2-nudge budget
-		// applies only to the consecutive text-only stalls that followed.
+		// Global cap holds across the tool turn: 2 nudges total (not 4), and the
+		// post-tool text-only turn (#4) ends the loop instead of being nudged.
 		expect(nudgeCount).toBe(2);
 		expect(calls).toBe(4);
 	});

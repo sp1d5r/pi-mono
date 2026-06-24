@@ -163,8 +163,10 @@ async function runLoop(
 	let currentContext = initialContext;
 	let config = initialConfig;
 	let firstTurn = true;
-	// Idle-continuation budget for the work-pending guard. Counts consecutive
-	// text-only stalls; reset to zero whenever a turn executes a tool.
+	// Idle-continuation budget for the work-pending guard. SESSION-GLOBAL — never
+	// resets, so a finished agent can't loop forever by calling trivial tools
+	// between "done" narrations (B8). After maxIdleContinuations nudges total the
+	// guard goes quiet and the next text-only turn ends the loop.
 	let idleContinuations = 0;
 	// Check for steering messages at start (user may have typed while waiting)
 	let pendingMessages: AgentMessage[] = (await config.getSteeringMessages?.()) || [];
@@ -253,20 +255,22 @@ async function runLoop(
 				return;
 			}
 
-			// A turn that executed a tool is real progress — refill the budget.
-			if (toolCalls.length > 0) {
-				idleContinuations = 0;
-			}
-
 			pendingMessages = (await config.getSteeringMessages?.()) || [];
 
 			// Work-pending guard. A text-only turn (no tool calls) with nothing
 			// queued is about to exit the inner loop and emit `agent_end` — the
 			// premature turn-end where the model narrated a next step but never
-			// issued the tool call. Give the harness one bounded chance to inject
-			// a continuation nudge so the agent actually does the work. The cap
-			// keeps a genuinely-finished agent from looping: it re-confirms
-			// completion and, once the budget is spent, the loop ends normally.
+			// issued the tool call. Give the harness a BOUNDED number of chances
+			// to inject a continuation nudge so the agent actually does the work.
+			//
+			// `idleContinuations` is a SESSION-GLOBAL counter that never resets.
+			// An earlier version reset it on any tool-running turn ("real
+			// progress"), but that let a FINISHED agent loop forever: it would
+			// emit "task complete" (text-only) → get nudged → call a trivial tool
+			// to comply → the tool turn reset the counter → repeat. A real reel
+			// run looped 70+ turns past completion this way (B8). A global cap
+			// guarantees termination: after N nudges the guard goes quiet and the
+			// agent's next text-only turn ends the loop normally.
 			if (
 				config.getIdleContinuation &&
 				toolCalls.length === 0 &&
