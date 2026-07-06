@@ -690,14 +690,24 @@ export const streamAnthropic: StreamFunction<"anthropic-messages", AnthropicOpti
  * Check if a model supports adaptive thinking (Opus 4.6+, Sonnet 4.6)
  */
 function supportsAdaptiveThinking(modelId: string): boolean {
-	// Adaptive-thinking model IDs (with or without date suffix)
+	// Adaptive-thinking model IDs (with or without date suffix). The Claude 5
+	// family is adaptive-ONLY: sending the legacy `thinking.type: "enabled"`
+	// param gets a 400 invalid_request_error ("use thinking.type.adaptive and
+	// output_config.effort") — which silently killed every persona subagent on
+	// the 2026-07-06 Ate run when personas were pinned to sonnet-5.
 	return (
 		modelId.includes("opus-4-6") ||
 		modelId.includes("opus-4.6") ||
 		modelId.includes("opus-4-7") ||
 		modelId.includes("opus-4.7") ||
+		modelId.includes("opus-4-8") ||
+		modelId.includes("opus-4.8") ||
 		modelId.includes("sonnet-4-6") ||
-		modelId.includes("sonnet-4.6")
+		modelId.includes("sonnet-4.6") ||
+		modelId.includes("sonnet-5") ||
+		modelId.includes("opus-5") ||
+		modelId.includes("fable-5") ||
+		modelId.includes("mythos-5")
 	);
 }
 
