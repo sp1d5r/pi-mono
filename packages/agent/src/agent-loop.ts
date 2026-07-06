@@ -308,6 +308,62 @@ async function runLoop(
 }
 
 /**
+ * Env-gated image-window pruning (PI_IMAGE_WINDOW=N): keep only the N most
+ * recent image blocks in the request; older ones become a text placeholder.
+ * Applied per-request at the LLM boundary so session history keeps full
+ * fidelity while the wire request stays bounded. Without this, a long visual
+ * iteration leg (the same slide re-read at full res, multi-MB base64 each
+ * time) accumulates until the provider rejects the request outright
+ * (Anthropic 413 request_too_large) or the process heap OOMs. Unset/invalid
+ * env → disabled. Note: when the window slides, the oldest in-window image
+ * flips to a placeholder mid-transcript, invalidating the prompt cache from
+ * that point — same trade compaction already makes.
+ */
+function pruneImageWindow(messages: AgentMessage[]): AgentMessage[] {
+	const window = Number.parseInt(process.env.PI_IMAGE_WINDOW ?? "", 10);
+	if (!Number.isFinite(window) || window < 0) return messages;
+	let kept = 0;
+	let changed = false;
+	const out: AgentMessage[] = new Array(messages.length);
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const content = (messages[i] as { content?: unknown }).content;
+		if (!Array.isArray(content)) {
+			out[i] = messages[i];
+			continue;
+		}
+		const imageIndices: number[] = [];
+		for (let j = 0; j < content.length; j++) {
+			if ((content[j] as { type?: string } | undefined)?.type === "image") imageIndices.push(j);
+		}
+		if (imageIndices.length === 0) {
+			out[i] = messages[i];
+			continue;
+		}
+		// Newest images win, including within a single message (last block first).
+		const keep = new Set<number>();
+		for (let k = imageIndices.length - 1; k >= 0 && kept < window; k--) {
+			keep.add(imageIndices[k]);
+			kept++;
+		}
+		if (keep.size === imageIndices.length) {
+			out[i] = messages[i];
+			continue;
+		}
+		const newContent = content.map((block, j) =>
+			(block as { type?: string } | undefined)?.type === "image" && !keep.has(j)
+				? {
+						type: "text" as const,
+						text: "[image elided: outside the recent-image window. Re-read the file if you need to see it again.]",
+					}
+				: block,
+		);
+		out[i] = { ...(messages[i] as object), content: newContent } as AgentMessage;
+		changed = true;
+	}
+	return changed ? out : messages;
+}
+
+/**
  * Stream an assistant response from the LLM.
  * This is where AgentMessage[] gets transformed to Message[] for the LLM.
  */
@@ -323,6 +379,7 @@ async function streamAssistantResponse(
 	if (config.transformContext) {
 		messages = await config.transformContext(messages, signal);
 	}
+	messages = pruneImageWindow(messages);
 
 	// Convert to LLM-compatible messages (AgentMessage[] → Message[])
 	const llmMessages = await config.convertToLlm(messages);
