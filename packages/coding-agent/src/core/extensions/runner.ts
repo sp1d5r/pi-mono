@@ -681,13 +681,41 @@ export class ExtensionRunner {
 		const ctx = this.createContext();
 		let result: SessionBeforeEventResult | undefined;
 
+		// Terminal events must not hang the loop's exit path: extension handlers
+		// are awaited inline, so a handler whose I/O never resolves (e.g. an HTTP
+		// forward to a backend) leaves the session alive-but-silent after the
+		// final message — the B12 wedge (2026-07-06: sessions finished their
+		// work, never emitted agent_end, got killed by the runner's stall
+		// watchdog 10min later and marked crashed). Bound the await and log the
+		// culprit to stderr instead.
+		const isTerminal = event.type === "agent_end" || event.type === "turn_end";
+		const TERMINAL_HANDLER_TIMEOUT_MS = 60_000;
+
 		for (const ext of this.extensions) {
 			const handlers = ext.handlers.get(event.type);
 			if (!handlers || handlers.length === 0) continue;
 
 			for (const handler of handlers) {
 				try {
-					const handlerResult = await handler(event, ctx);
+					let handlerResult: unknown;
+					if (isTerminal) {
+						handlerResult = await Promise.race([
+							handler(event, ctx),
+							new Promise((_, reject) =>
+								setTimeout(
+									() =>
+										reject(
+											new Error(
+												`[pi-exit] ${event.type} handler from ${ext.path} exceeded ${TERMINAL_HANDLER_TIMEOUT_MS}ms — unblocking exit path`,
+											),
+										),
+									TERMINAL_HANDLER_TIMEOUT_MS,
+								).unref?.(),
+							),
+						]);
+					} else {
+						handlerResult = await handler(event, ctx);
+					}
 
 					if (this.isSessionBeforeEvent(event) && handlerResult) {
 						result = handlerResult as SessionBeforeEventResult;
@@ -698,6 +726,11 @@ export class ExtensionRunner {
 				} catch (err) {
 					const message = err instanceof Error ? err.message : String(err);
 					const stack = err instanceof Error ? err.stack : undefined;
+					if (isTerminal) {
+						// stderr so the host runner (which only promotes loud lines)
+						// records exactly which handler stalled/failed the exit path.
+						console.error(`[pi-exit] ${event.type} handler error (${ext.path}): ${message}`);
+					}
 					this.emitError({
 						extensionPath: ext.path,
 						event: event.type,

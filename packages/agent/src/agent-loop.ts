@@ -293,6 +293,9 @@ async function runLoop(
 		}
 
 		// Agent would stop here. Check for follow-up messages.
+		// [pi-exit] markers: one-line stderr breadcrumbs on the loop's exit path
+		// so a hang here (B12) names its exact await in the host runner's logs.
+		console.error("[pi-exit] inner loop done — draining follow-ups");
 		const followUpMessages = (await config.getFollowUpMessages?.()) || [];
 		if (followUpMessages.length > 0) {
 			// Set as pending so inner loop processes them
@@ -304,7 +307,9 @@ async function runLoop(
 		break;
 	}
 
+	console.error("[pi-exit] emitting agent_end");
 	await emit({ type: "agent_end", messages: newMessages });
+	console.error("[pi-exit] agent_end emitted — loop complete");
 }
 
 /**
