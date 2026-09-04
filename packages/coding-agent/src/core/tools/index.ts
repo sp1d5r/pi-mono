@@ -61,6 +61,15 @@ export {
 	truncateTail,
 } from "./truncate.js";
 export {
+	createWatchTool,
+	createWatchToolDefinition,
+	type ExecOutcome,
+	type WatchOperations,
+	type WatchToolDetails,
+	type WatchToolInput,
+	type WatchToolOptions,
+} from "./watch.js";
+export {
 	createWriteTool,
 	createWriteToolDefinition,
 	type WriteOperations,
@@ -80,6 +89,11 @@ import { createWriteTool, createWriteToolDefinition, type WriteToolOptions } fro
 
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
+// `watch` is deliberately NOT here. Everything in this set is a built-in that
+// works on a bare machine with no configuration; watch needs a Gemini key and a
+// network, so defaulting it on would add a tool to every pi session that throws
+// the first time it is called. It is exported as a factory and registered by
+// whoever has the key - for Naomi, pi-extension-e2b-hands.
 export type ToolName = "read" | "bash" | "edit" | "write" | "grep" | "find" | "ls";
 export const allToolNames: Set<ToolName> = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
 
