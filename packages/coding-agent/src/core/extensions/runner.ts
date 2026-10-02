@@ -353,6 +353,44 @@ const noOpUIContext: ExtensionUIContext = {
 	setToolsExpanded: () => {},
 };
 
+// Terminal events must not hang the loop's exit path. Extension handlers are
+// awaited inline, so a handler whose I/O never resolves (e.g. an HTTP forward to
+// a backend) leaves the session alive-but-silent after its final message: work
+// done, agent_end never emitted, killed by the host's stall watchdog 10min later
+// and marked crashed (B12, 2026-07-06). Bound the await and name the culprit on
+// stderr, which the host runner promotes.
+const TERMINAL_EVENT_TYPES = new Set(["turn_end", "agent_before_settle", "agent_end", "agent_settled"]);
+const TERMINAL_HANDLER_TIMEOUT_MS = 60_000;
+
+async function awaitHandler<T>(eventType: string, extensionPath: string, run: () => Promise<T> | T): Promise<T> {
+	if (!TERMINAL_EVENT_TYPES.has(eventType)) return await run();
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			Promise.resolve().then(run),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(
+					() =>
+						reject(
+							new Error(
+								`[pi-exit] ${eventType} handler from ${extensionPath} exceeded ${TERMINAL_HANDLER_TIMEOUT_MS}ms, unblocking exit path`,
+							),
+						),
+					TERMINAL_HANDLER_TIMEOUT_MS,
+				);
+				timer.unref?.();
+			}),
+		]);
+	} catch (err) {
+		console.error(
+			`[pi-exit] ${eventType} handler error (${extensionPath}): ${err instanceof Error ? err.message : String(err)}`,
+		);
+		throw err;
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 export class ExtensionRunner {
 	private extensions: Extension[];
 	private runtime: ExtensionRuntime;
@@ -1036,7 +1074,9 @@ export class ExtensionRunner {
 					context,
 				} as TurnEndEvent | AgentBeforeSettleEvent;
 				try {
-					const handlerResult = (await handler(event, ctx)) as BoundaryResult | undefined;
+					const handlerResult = (await awaitHandler(baseEvent.type, ext.path, () => handler(event, ctx))) as
+						| BoundaryResult
+						| undefined;
 					if (handlerResult?.entries !== undefined) entries = handlerResult.entries;
 					if (handlerResult?.continue !== undefined) shouldContinue = handlerResult.continue;
 				} catch (err) {
@@ -1084,7 +1124,7 @@ export class ExtensionRunner {
 		for (const { ext, handlers } of snapshotEventHandlers(this.extensions, event.type)) {
 			for (const handler of handlers) {
 				try {
-					const handlerResult = await handler(event, ctx);
+					const handlerResult = await awaitHandler(event.type, ext.path, () => handler(event, ctx));
 
 					if (this.isSessionBeforeEvent(event) && handlerResult) {
 						result = handlerResult as SessionBeforeEventResult;
