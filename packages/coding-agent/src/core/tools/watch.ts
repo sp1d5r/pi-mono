@@ -5,6 +5,7 @@ import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
+import type { Theme } from "../../modes/interactive/theme/theme.ts";
 import type { ToolDefinition, ToolRenderResultOptions } from "../extensions/types.ts";
 import { resolveReadPath } from "./path-utils.ts";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.ts";
@@ -276,10 +277,7 @@ async function cutFrames(
 	return { frames };
 }
 
-function formatWatchCall(
-	args: { path?: string; question?: string } | undefined,
-	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
-): string {
+function formatWatchCall(args: { path?: string; question?: string } | undefined, theme: Theme): string {
 	const rawPath = str(args?.path);
 	const path = rawPath !== null ? shortenPath(rawPath) : null;
 	let text = `${theme.fg("toolTitle", theme.bold("watch"))} ${
@@ -299,7 +297,7 @@ function formatWatchResult(
 		details?: WatchToolDetails;
 	},
 	options: ToolRenderResultOptions,
-	theme: typeof import("../../modes/interactive/theme/theme.js").theme,
+	theme: Theme,
 	showImages: boolean,
 ): string {
 	const output = getTextOutput(result, showImages).trim();
